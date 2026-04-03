@@ -8,7 +8,9 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/dennisschroeder/iot-automation-notification/internal/config"
 	"github.com/dennisschroeder/iot-automation-notification/internal/provider"
@@ -29,6 +31,8 @@ type Service struct {
 	configPath string
 	activeIDs  map[string]bool
 	providers  map[string]provider.NotificationProvider
+	lastFired  map[string]time.Time
+	mu         sync.Mutex
 }
 
 func NewService(n *nats.Client, m *mqtt.Client, cfg *config.Config, configPath string) *Service {
@@ -39,6 +43,7 @@ func NewService(n *nats.Client, m *mqtt.Client, cfg *config.Config, configPath s
 		configPath: configPath,
 		activeIDs:  make(map[string]bool),
 		providers:  make(map[string]provider.NotificationProvider),
+		lastFired:  make(map[string]time.Time),
 	}
 
 	// Register providers
@@ -193,6 +198,18 @@ func (s *Service) handleLightEvent(ctx context.Context, l *light.LightEvent) {
 }
 
 func (s *Service) evaluateAndExecute(ctx context.Context, rule config.NotificationRule) {
+	// 0. Debounce Check
+	s.mu.Lock()
+	if last, ok := s.lastFired[rule.ID]; ok {
+		if time.Since(last) < 2*time.Second {
+			slog.Debug("Debouncing rule execution", "rule", rule.ID)
+			s.mu.Unlock()
+			return
+		}
+	}
+	s.lastFired[rule.ID] = time.Now()
+	s.mu.Unlock()
+
 	// 1. Mute/Lock Check
 	lockKey := fmt.Sprintf("lock.%s", rule.ID)
 	lockVal, _ := s.nats.GetKV(lockKey)
