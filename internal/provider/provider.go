@@ -9,6 +9,7 @@ import (
 	"github.com/dennisschroeder/iot-automation-notification/internal/config"
 	"github.com/dennisschroeder/iot-automation-notification/internal/transport/nats"
 	"github.com/dennisschroeder/iot-schemas-proto/proto/v1/action"
+	"github.com/dennisschroeder/iot-schemas-proto/proto/v1/notification"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -43,11 +44,9 @@ func (h *HomeAssistantProvider) Send(ctx context.Context, act config.Action) err
 		Id:           fmt.Sprintf("notif_%d", time.Now().UnixNano()),
 		TargetEntity: fmt.Sprintf("notify.mobile_app_%s", act.Target),
 		Command: &action.ActionRequest_Notification{
-			Notification: &action.NotificationCommand{
+			Notification: &notification.NotificationCommand{
 				Title:   act.Title,
 				Message: act.Message,
-				// Data is passed as a map in config, we might need to handle it 
-				// specifically if the proto expects a certain structure.
 			},
 		},
 	}

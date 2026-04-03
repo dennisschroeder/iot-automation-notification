@@ -9,14 +9,15 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/dennisschroeder/iot-automation-notification/internal/config"
 	"github.com/dennisschroeder/iot-automation-notification/internal/provider"
 	"github.com/dennisschroeder/iot-automation-notification/internal/transport/mqtt"
 	"github.com/dennisschroeder/iot-automation-notification/internal/transport/nats"
+	"github.com/dennisschroeder/iot-schemas-proto/proto/v1/binary_sensor"
 	"github.com/dennisschroeder/iot-schemas-proto/proto/v1/common"
 	"github.com/dennisschroeder/iot-schemas-proto/proto/v1/envelope"
+	"github.com/dennisschroeder/iot-schemas-proto/proto/v1/light"
 	natsgo "github.com/nats-io/nats.go"
 	"google.golang.org/protobuf/proto"
 )
@@ -140,7 +141,7 @@ func (s *Service) setupMuteSwitches() {
 	})
 }
 
-func (s *Service) handleBinarySensorEvent(ctx context.Context, bs *common.BinarySensor) {
+func (s *Service) handleBinarySensorEvent(ctx context.Context, bs *binary_sensor.BinarySensorEvent) {
 	stateStr := "OFF"
 	if bs.State == common.BinaryState_BINARY_STATE_ON {
 		stateStr = "ON"
@@ -162,7 +163,7 @@ func (s *Service) handleBinarySensorEvent(ctx context.Context, bs *common.Binary
 	}
 }
 
-func (s *Service) handleLightEvent(ctx context.Context, l *common.Light) {
+func (s *Service) handleLightEvent(ctx context.Context, l *light.LightEvent) {
 	stateStr := "OFF"
 	if l.State == common.BinaryState_BINARY_STATE_ON {
 		stateStr = "ON"
