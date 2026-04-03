@@ -40,6 +40,14 @@ func (h *HomeAssistantProvider) Send(ctx context.Context, act config.Action) err
 	// Implementation note: The actual HA service call (notify.mobile_app_<target>)
 	// is handled by the bridge that listens to this NATS topic.
 	
+	var dataMap map[string]string
+	if len(act.Data) > 0 {
+		dataMap = make(map[string]string)
+		for k, v := range act.Data {
+			dataMap[k] = fmt.Sprintf("%v", v)
+		}
+	}
+
 	payload := &action.ActionRequest{
 		Id:           fmt.Sprintf("notif_%d", time.Now().UnixNano()),
 		TargetEntity: fmt.Sprintf("notify.mobile_app_%s", act.Target),
@@ -47,6 +55,7 @@ func (h *HomeAssistantProvider) Send(ctx context.Context, act config.Action) err
 			Notification: &notification.NotificationCommand{
 				Title:   act.Title,
 				Message: act.Message,
+				Data:    dataMap,
 			},
 		},
 	}
