@@ -1,0 +1,11 @@
+notifications:
+  - id: "doorbell_test"
+    trigger:
+      devices: ["binary_sensor.front_door_bell"]
+      type: "binary_sensor"
+      state: "ON"
+    actions:
+      - channel: "mobile_app"
+        target: "dennis_iphone"
+        title: "Klingel Test"
+        message: "Jemand hat an der Tür geklingelt (Test-Automation)."

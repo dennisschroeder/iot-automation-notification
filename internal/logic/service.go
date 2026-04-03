@@ -68,6 +68,9 @@ func (s *Service) Run(ctx context.Context) error {
 
 		if bs := env.GetBinarySensor(); bs != nil {
 			slog.Info("Received binary sensor event", "entity_id", bs.EntityId, "state", bs.State, "class", bs.DeviceClass)
+			if strings.Contains(bs.EntityId, "doorbell") {
+				slog.Info("DOORBELL EVENT DETECTED", "entity_id", bs.EntityId, "state", bs.State)
+			}
 			s.handleBinarySensorEvent(ctx, bs)
 		} else if light := env.GetLight(); light != nil {
 			slog.Info("Received light event", "entity_id", light.EntityId, "state", light.State)
