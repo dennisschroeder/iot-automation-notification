@@ -67,8 +67,10 @@ func (s *Service) Run(ctx context.Context) error {
 		}
 
 		if bs := env.GetBinarySensor(); bs != nil {
+			slog.Debug("Received binary sensor event", "entity_id", bs.EntityId, "state", bs.State, "class", bs.DeviceClass)
 			s.handleBinarySensorEvent(ctx, bs)
 		} else if light := env.GetLight(); light != nil {
+			slog.Debug("Received light event", "entity_id", light.EntityId, "state", light.State)
 			s.handleLightEvent(ctx, light)
 		}
 	})
@@ -150,6 +152,7 @@ func (s *Service) handleBinarySensorEvent(ctx context.Context, bs *binary_sensor
 	for _, rule := range s.cfg.Notifications {
 		match := false
 		for _, dName := range rule.Trigger.Devices {
+			slog.Debug("Checking rule trigger", "rule", rule.ID, "target_device", dName, "event_device", bs.EntityId, "event_state", stateStr, "expected_state", rule.Trigger.State)
 			if (bs.EntityId == dName || strings.HasSuffix(bs.EntityId, "."+dName)) && 
 				rule.Trigger.Type == "binary_sensor" && rule.Trigger.State == stateStr {
 				match = true
@@ -158,6 +161,7 @@ func (s *Service) handleBinarySensorEvent(ctx context.Context, bs *binary_sensor
 		}
 
 		if match {
+			slog.Info("Rule matched, executing", "rule", rule.ID)
 			s.evaluateAndExecute(ctx, rule)
 		}
 	}
