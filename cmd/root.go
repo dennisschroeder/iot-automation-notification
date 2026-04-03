@@ -5,9 +5,10 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/dennisschroeder/iot-automation-template-go/internal/logic"
-	"github.com/dennisschroeder/iot-automation-template-go/internal/transport/mqtt"
-	"github.com/dennisschroeder/iot-automation-template-go/internal/transport/nats"
+	"github.com/dennisschroeder/iot-automation-notification/internal/config"
+	"github.com/dennisschroeder/iot-automation-notification/internal/logic"
+	"github.com/dennisschroeder/iot-automation-notification/internal/transport/mqtt"
+	"github.com/dennisschroeder/iot-automation-notification/internal/transport/nats"
 	"github.com/spf13/cobra"
 )
 
@@ -16,13 +17,20 @@ var (
 	mqttBroker string
 	clientID   string
 	logLevel   string
+	configPath string
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "iot-automation",
-	Short: "Go Automation Engine for Homelab IoT",
+	Use:   "iot-automation-notification",
+	Short: "Go Notification Engine for Homelab IoT",
 	Run: func(cmd *cobra.Command, args []string) {
 		setupLogger()
+
+		cfg, err := config.LoadConfig(configPath)
+		if err != nil {
+			slog.Error("Failed to load configuration", "error", err)
+			os.Exit(1)
+		}
 
 		nClient, err := nats.NewClient(natsURL)
 		if err != nil {
@@ -38,7 +46,7 @@ var rootCmd = &cobra.Command{
 		}
 		defer mClient.Close()
 
-		svc := logic.NewService(nClient, mClient)
+		svc := logic.NewService(nClient, mClient, cfg, configPath)
 		if err := svc.Run(context.Background()); err != nil {
 			slog.Error("Service execution failed", "error", err)
 			os.Exit(1)
@@ -56,8 +64,9 @@ func Execute() {
 func init() {
 	rootCmd.PersistentFlags().StringVar(&natsURL, "nats-url", "nats://nats.event-bus:4222", "NATS Server URL")
 	rootCmd.PersistentFlags().StringVar(&mqttBroker, "mqtt-broker", "tcp://mosquitto.iot:1883", "MQTT Broker URL")
-	rootCmd.PersistentFlags().StringVar(&clientID, "client-id", "iot-automation", "Unique Client ID")
+	rootCmd.PersistentFlags().StringVar(&clientID, "client-id", "iot-notification-service", "Unique Client ID")
 	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
+	rootCmd.PersistentFlags().StringVar(&configPath, "config", "/etc/iot/config.yaml", "Path to config.yaml")
 }
 
 func setupLogger() {

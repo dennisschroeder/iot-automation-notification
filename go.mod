@@ -1,4 +1,4 @@
-module github.com/dennisschroeder/iot-automation-template-go
+module github.com/dennisschroeder/iot-automation-notification
 
 go 1.24.0
 
@@ -8,6 +8,7 @@ require (
 	github.com/nats-io/nats.go v1.49.0
 	github.com/spf13/cobra v1.10.2
 	google.golang.org/protobuf v1.36.11
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

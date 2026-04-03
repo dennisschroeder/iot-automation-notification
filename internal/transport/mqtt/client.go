@@ -29,6 +29,8 @@ func NewClient(broker string, clientID string) (*Client, error) {
 	return &Client{client: client}, nil
 }
 
+type MessageHandler func(topic string, payload []byte)
+
 func (c *Client) PublishDiscovery(component string, objectID string, config interface{}) error {
 	topic := fmt.Sprintf("homeassistant/%s/%s/config", component, objectID)
 	payload, err := json.Marshal(config)
@@ -43,6 +45,14 @@ func (c *Client) PublishDiscovery(component string, objectID string, config inte
 
 func (c *Client) Publish(topic string, payload interface{}) error {
 	token := c.client.Publish(topic, 0, false, payload)
+	token.Wait()
+	return token.Error()
+}
+
+func (c *Client) Subscribe(topic string, handler MessageHandler) error {
+	token := c.client.Subscribe(topic, 0, func(client mqtt.Client, msg mqtt.Message) {
+		handler(msg.Topic(), msg.Payload())
+	})
 	token.Wait()
 	return token.Error()
 }

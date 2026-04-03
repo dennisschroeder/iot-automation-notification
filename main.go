@@ -1,6 +1,6 @@
 package main
 
-import "github.com/dennisschroeder/iot-automation-template-go/cmd"
+import "github.com/dennisschroeder/iot-automation-notification/cmd"
 
 func main() {
 	cmd.Execute()
