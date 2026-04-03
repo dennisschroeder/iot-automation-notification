@@ -38,6 +38,7 @@ func (c *Client) PublishDiscovery(component string, objectID string, config inte
 		return err
 	}
 
+	slog.Info("Publishing MQTT discovery", "topic", topic, "component", component)
 	token := c.client.Publish(topic, 0, true, payload)
 	token.Wait()
 	return token.Error()
