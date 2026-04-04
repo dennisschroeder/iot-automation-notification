@@ -35,7 +35,7 @@ type Service struct {
 	mu         sync.Mutex
 }
 
-func NewService(n *nats.Client, m *mqtt.Client, cfg *config.Config, configPath string) *Service {
+func NewService(n *nats.Client, m *mqtt.Client, cfg *config.Config, configPath string, googleHomes string) *Service {
 	s := &Service{
 		nats:       n,
 		mqtt:       m,
@@ -49,7 +49,7 @@ func NewService(n *nats.Client, m *mqtt.Client, cfg *config.Config, configPath s
 	// Register providers
 	ha := provider.NewHomeAssistantProvider(n)
 	s.providers[ha.Name()] = ha
-	gh := &provider.GoogleHomeProvider{}
+	gh := provider.NewGoogleHomeProvider(m, googleHomes)
 	s.providers[gh.Name()] = gh
 	tv := &provider.TVProvider{}
 	s.providers[tv.Name()] = tv

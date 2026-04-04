@@ -13,11 +13,12 @@ import (
 )
 
 var (
-	natsURL    string
-	mqttBroker string
-	clientID   string
-	logLevel   string
-	configPath string
+	natsURL     string
+	mqttBroker  string
+	clientID    string
+	logLevel    string
+	configPath  string
+	googleHomes string
 )
 
 var rootCmd = &cobra.Command{
@@ -46,7 +47,7 @@ var rootCmd = &cobra.Command{
 		}
 		defer mClient.Close()
 
-		svc := logic.NewService(nClient, mClient, cfg, configPath)
+		svc := logic.NewService(nClient, mClient, cfg, configPath, googleHomes)
 		if err := svc.Run(context.Background()); err != nil {
 			slog.Error("Service execution failed", "error", err)
 			os.Exit(1)
@@ -67,6 +68,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&clientID, "client-id", "iot-notification-service", "Unique Client ID")
 	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
 	rootCmd.PersistentFlags().StringVar(&configPath, "config", "/etc/iot/config.yaml", "Path to config.yaml")
+	rootCmd.PersistentFlags().StringVar(&googleHomes, "google-homes", "", "Comma separated list of Google Home media_players")
 }
 
 func setupLogger() {
