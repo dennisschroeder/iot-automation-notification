@@ -2,11 +2,16 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/dennisschroeder/iot-automation-notification/internal/config"
+	"github.com/dennisschroeder/iot-automation-notification/internal/transport/mqtt"
 	"github.com/dennisschroeder/iot-automation-notification/internal/transport/nats"
 	"github.com/dennisschroeder/iot-schemas-proto/proto/v1/action"
 	"github.com/dennisschroeder/iot-schemas-proto/proto/v1/notification"
@@ -69,12 +74,78 @@ func (h *HomeAssistantProvider) Send(ctx context.Context, act config.Action) err
 	return h.nats.Publish(subject, data)
 }
 
-// GoogleHomeProvider stub for TTS notifications
-type GoogleHomeProvider struct{}
+// GoogleHomeProvider implementation for TTS notifications with volume control
+type GoogleHomeProvider struct {
+	mqttClient *mqtt.Client
+	targets    []string
+	volumes    map[string]float64
+	mu         sync.RWMutex
+}
+
+func NewGoogleHomeProvider(m *mqtt.Client, targets string) *GoogleHomeProvider {
+	gh := &GoogleHomeProvider{
+		mqttClient: m,
+		volumes:    make(map[string]float64),
+	}
+	
+	if targets != "" {
+		parts := strings.Split(targets, ",")
+		for _, p := range parts {
+			t := strings.TrimSpace(p)
+			if t != "" {
+				gh.targets = append(gh.targets, t)
+			}
+		}
+	}
+
+	// Subscribe to volume updates from HA statestream
+	m.Subscribe("homeassistant/media_player/+/volume_level", func(topic string, payload []byte) {
+		parts := strings.Split(topic, "/")
+		if len(parts) == 4 {
+			entityID := "media_player." + parts[2]
+			vol, err := strconv.ParseFloat(string(payload), 64)
+			if err == nil {
+				gh.mu.Lock()
+				gh.volumes[entityID] = vol
+				gh.mu.Unlock()
+			}
+		}
+	})
+
+	return gh
+}
 
 func (g *GoogleHomeProvider) Name() string { return "google_home" }
+
 func (g *GoogleHomeProvider) Send(ctx context.Context, act config.Action) error {
-	slog.Info("Google Home TTS (Stub)", "target", act.Target, "message", act.Message)
+	slog.Info("Google Home TTS", "target", act.Target, "message", act.Message)
+
+	for _, target := range g.targets {
+		g.mu.RLock()
+		vol := g.volumes[target]
+		g.mu.RUnlock()
+
+		if vol < 0.6 {
+			slog.Info("Increasing Google Home volume", "target", target, "current_vol", vol)
+			volPayload, _ := json.Marshal(map[string]interface{}{
+				"entity_id": target,
+				"data": map[string]interface{}{
+					"volume_level": 0.6,
+				},
+			})
+			g.mqttClient.Publish("homeassistant/service/media_player/volume_set", volPayload)
+			time.Sleep(500 * time.Millisecond) // Give HA some time to apply volume
+		}
+
+		ttsPayload, _ := json.Marshal(map[string]interface{}{
+			"entity_id": target,
+			"data": map[string]interface{}{
+				"message": act.Message,
+			},
+		})
+		g.mqttClient.Publish("homeassistant/service/tts/google_translate_say", ttsPayload)
+	}
+
 	return nil
 }
 
