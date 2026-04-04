@@ -143,7 +143,7 @@ func (g *GoogleHomeProvider) Send(ctx context.Context, act config.Action) error 
 				"message": act.Message,
 			},
 		})
-		g.mqttClient.Publish("homeassistant/service/tts/google_translate_say", ttsPayload)
+		g.mqttClient.Publish("homeassistant/service/tts/cloud_say", ttsPayload)
 	}
 
 	return nil
