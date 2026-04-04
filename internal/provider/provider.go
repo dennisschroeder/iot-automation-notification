@@ -128,10 +128,8 @@ func (g *GoogleHomeProvider) Send(ctx context.Context, act config.Action) error 
 		if vol < 0.6 {
 			slog.Info("Increasing Google Home volume", "target", target, "current_vol", vol)
 			volPayload, _ := json.Marshal(map[string]interface{}{
-				"entity_id": target,
-				"data": map[string]interface{}{
-					"volume_level": 0.6,
-				},
+				"entity_id":    target,
+				"volume_level": 0.6,
 			})
 			g.mqttClient.Publish("homeassistant/service/media_player/volume_set", volPayload)
 			time.Sleep(500 * time.Millisecond) // Give HA some time to apply volume
@@ -139,9 +137,7 @@ func (g *GoogleHomeProvider) Send(ctx context.Context, act config.Action) error 
 
 		ttsPayload, _ := json.Marshal(map[string]interface{}{
 			"entity_id": target,
-			"data": map[string]interface{}{
-				"message": act.Message,
-			},
+			"message":   act.Message,
 		})
 		g.mqttClient.Publish("homeassistant/service/tts/cloud_say", ttsPayload)
 	}
