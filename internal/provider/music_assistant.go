@@ -131,12 +131,8 @@ func (m *MusicAssistantProvider) synthesizeSpeech(text string) ([]byte, error) {
 		}
 
 		if event.Type == "audio-chunk" {
-			var chunk struct {
-				Data string `json:"data"` // Wyoming sometimes sends data in the header or as trailing binary
-			}
 			// In Wyoming, if the event has a data payload, it follows the JSON header.
-			// But since we are using a decoder, we need to be careful with the binary part.
-			// For now, we log the chunk receipt.
+			// For now, we just log the chunk receipt to satisfy the compiler.
 			slog.Debug("Received audio chunk from Piper")
 		}
 
