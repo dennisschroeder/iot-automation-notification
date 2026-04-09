@@ -36,7 +36,7 @@ func (m *MusicAssistantProvider) Send(ctx context.Context, act config.Action) er
 	// 1. Generate Audio via Piper (Wyoming Protocol)
 	// Wyoming protocol is newline-delimited JSON followed by optional binary data.
 	// For TTS, we send a 'synthesize' event and receive audio chunks.
-	audioData, err := m.synthesizeSpeech(act.Message)
+	_, err := m.synthesizeSpeech(act.Message)
 	if err != nil {
 		return fmt.Errorf("failed to synthesize speech via piper: %w", err)
 	}
