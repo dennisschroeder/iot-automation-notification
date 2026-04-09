@@ -33,9 +33,11 @@ type Service struct {
 	providers  map[string]provider.NotificationProvider
 	lastFired  map[string]time.Time
 	mu         sync.Mutex
+	massURL    string
+	piperURL   string
 }
 
-func NewService(n *nats.Client, m *mqtt.Client, cfg *config.Config, configPath string, googleHomes string) *Service {
+func NewService(n *nats.Client, m *mqtt.Client, cfg *config.Config, configPath string, googleHomes string, massURL string, piperURL string) *Service {
 	s := &Service{
 		nats:       n,
 		mqtt:       m,
@@ -44,6 +46,8 @@ func NewService(n *nats.Client, m *mqtt.Client, cfg *config.Config, configPath s
 		activeIDs:  make(map[string]bool),
 		providers:  make(map[string]provider.NotificationProvider),
 		lastFired:  make(map[string]time.Time),
+		massURL:    massURL,
+		piperURL:   piperURL,
 	}
 
 	// Register providers
@@ -53,6 +57,12 @@ func NewService(n *nats.Client, m *mqtt.Client, cfg *config.Config, configPath s
 	s.providers[gh.Name()] = gh
 	tv := &provider.TVProvider{}
 	s.providers[tv.Name()] = tv
+
+	// Music Assistant Provider (for announcements via local Piper)
+	if massURL != "" {
+		mass := provider.NewMusicAssistantProvider(massURL, piperURL)
+		s.providers[mass.Name()] = mass
+	}
 
 	return s
 }
