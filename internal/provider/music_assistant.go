@@ -1,14 +1,19 @@
 package provider
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/dennisschroeder/iot-automation-notification/internal/config"
@@ -17,14 +22,24 @@ import (
 // MusicAssistantProvider sends announcements via Music Assistant JSON-RPC API.
 // It uses a local Piper service to generate the TTS audio.
 type MusicAssistantProvider struct {
-	massURL  string
-	piperURL string
+	massURL     string
+	piperURL    string
+	cacheDir    string
+	callbackURL string
 }
 
-func NewMusicAssistantProvider(massURL, piperURL string) *MusicAssistantProvider {
+func NewMusicAssistantProvider(massURL, piperURL string, cacheDir string, callbackURL string) *MusicAssistantProvider {
+	if cacheDir != "" {
+		if err := os.MkdirAll(cacheDir, 0755); err != nil {
+			slog.Error("Failed to create cache directory", "path", cacheDir, "error", err)
+		}
+	}
+
 	return &MusicAssistantProvider{
-		massURL:  massURL,
-		piperURL: piperURL,
+		massURL:     massURL,
+		piperURL:    piperURL,
+		cacheDir:    cacheDir,
+		callbackURL: callbackURL,
 	}
 }
 
@@ -33,40 +48,49 @@ func (m *MusicAssistantProvider) Name() string { return "music_assistant" }
 func (m *MusicAssistantProvider) Send(ctx context.Context, act config.Action) error {
 	slog.Info("Sending Music Assistant Announcement", "target", act.Target, "message", act.Message)
 
-	// 1. Generate Audio via Piper (Wyoming Protocol)
-	audioData, err := m.synthesizeSpeech(act.Message)
-	if err != nil {
-		slog.Warn("Piper synthesis failed, falling back to MAS internal TTS", "error", err)
+	var audioURL string
+
+	// 1. Check Cache and Generate Audio via Piper if needed
+	if m.cacheDir != "" && m.callbackURL != "" {
+		hash := sha256.Sum256([]byte(act.Message))
+		filename := hex.EncodeToString(hash[:]) + ".wav"
+		filePath := filepath.Join(m.cacheDir, filename)
+
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			slog.Info("Generating new TTS audio", "message", act.Message)
+			audioData, err := m.synthesizeSpeech(act.Message)
+			if err != nil {
+				slog.Warn("Piper synthesis failed, falling back to MAS internal TTS", "error", err)
+			} else if len(audioData) > 0 {
+				if err := os.WriteFile(filePath, audioData, 0644); err != nil {
+					slog.Error("Failed to save audio to cache", "error", err)
+				} else {
+					audioURL = fmt.Sprintf("%s/cache/%s", m.callbackURL, filename)
+				}
+			}
+		} else {
+			slog.Info("Using cached TTS audio", "filename", filename)
+			audioURL = fmt.Sprintf("%s/cache/%s", m.callbackURL, filename)
+		}
 	}
 
 	// 2. Prepare JSON-RPC payload
+	params := map[string]interface{}{
+		"player_id":     act.Target,
+		"use_streaming": true,
+	}
+
+	if audioURL != "" {
+		params["url"] = audioURL
+	} else {
+		params["message"] = act.Message
+	}
+
 	payload := map[string]interface{}{
 		"id":      1,
 		"jsonrpc": "2.0",
 		"method":  "players/play_announcement",
-		"params": map[string]interface{}{
-			"player_id":     act.Target,
-			"use_streaming": true,
-		},
-	}
-
-	// If we have audio data, we'll need to host it or pass it.
-	// For this iteration, we use the message parameter for MAS internal TTS.
-	// If audioData is available, we could potentially use it in the future
-	// when we have an internal webserver to host the buffer.
-	if len(audioData) > 0 {
-		slog.Info("Audio data generated via Piper", "bytes", len(audioData))
-		// Note: We currently don't have a way to pass raw bytes to MAS via JSON-RPC.
-		// We would need a sidecar or internal webserver to serve this audioData.
-	}
-
-	params := payload["params"].(map[string]interface{})
-	params["message"] = act.Message
-
-	// If a URL is provided in Data, use it instead of message
-	if url, ok := act.Data["url"].(string); ok {
-		payload["params"].(map[string]interface{})["url"] = url
-		delete(payload["params"].(map[string]interface{}), "message")
+		"params":  params,
 	}
 
 	jsonPayload, _ := json.Marshal(payload)
@@ -114,26 +138,37 @@ func (m *MusicAssistantProvider) synthesizeSpeech(text string) ([]byte, error) {
 	}
 
 	var audioBuffer bytes.Buffer
-	decoder := json.NewDecoder(conn)
+	reader := bufio.NewReader(conn)
 
 	// 2. Read Response Events
 	for {
-		var event struct {
-			Type string          `json:"type"`
-			Data json.RawMessage `json:"data"`
-		}
-
-		if err := decoder.Decode(&event); err != nil {
+		line, err := reader.ReadString('\n')
+		if err != nil {
 			if err == io.EOF {
 				break
 			}
-			return nil, fmt.Errorf("failed to decode wyoming event: %w", err)
+			return nil, fmt.Errorf("failed to read wyoming event: %w", err)
 		}
 
-		if event.Type == "audio-chunk" {
-			// In Wyoming, if the event has a data payload, it follows the JSON header.
-			// For now, we just log the chunk receipt to satisfy the compiler.
-			slog.Debug("Received audio chunk from Piper")
+		var event struct {
+			Type          string `json:"type"`
+			PayloadLength int    `json:"payload_length"`
+		}
+
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			continue
+		}
+
+		// Read binary payload if present
+		if event.PayloadLength > 0 {
+			payload := make([]byte, event.PayloadLength)
+			if _, err := io.ReadFull(reader, payload); err != nil {
+				return nil, fmt.Errorf("failed to read payload: %w", err)
+			}
+
+			if event.Type == "audio-chunk" {
+				audioBuffer.Write(payload)
+			}
 		}
 
 		if event.Type == "audio-stop" {

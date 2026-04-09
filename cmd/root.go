@@ -21,6 +21,8 @@ var (
 	googleHomes string
 	massURL     string
 	piperURL    string
+	cacheDir    string
+	callbackURL string
 )
 
 var rootCmd = &cobra.Command{
@@ -49,7 +51,7 @@ var rootCmd = &cobra.Command{
 		}
 		defer mClient.Close()
 
-		svc := logic.NewService(nClient, mClient, cfg, configPath, googleHomes, massURL, piperURL)
+		svc := logic.NewService(nClient, mClient, cfg, configPath, googleHomes, massURL, piperURL, cacheDir, callbackURL)
 		if err := svc.Run(context.Background()); err != nil {
 			slog.Error("Service execution failed", "error", err)
 			os.Exit(1)
@@ -73,6 +75,8 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&googleHomes, "google-homes", "", "Comma separated list of Google Home media_players")
 	rootCmd.PersistentFlags().StringVar(&massURL, "mass-url", "", "Music Assistant Server URL (e.g. http://mass.music-assistant:8095)")
 	rootCmd.PersistentFlags().StringVar(&piperURL, "piper-url", "", "Piper TTS Service URL (e.g. piper.iot:10200)")
+	rootCmd.PersistentFlags().StringVar(&cacheDir, "cache-dir", "", "Directory to cache TTS audio files (e.g. /tmp/tts-cache)")
+	rootCmd.PersistentFlags().StringVar(&callbackURL, "callback-url", "", "External URL of this service for MAS to download audio (e.g. http://iot-notification.iot:8080)")
 }
 
 func setupLogger() {

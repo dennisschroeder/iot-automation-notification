@@ -35,9 +35,11 @@ type Service struct {
 	mu         sync.Mutex
 	massURL    string
 	piperURL   string
+	cacheDir   string
+	callbackURL string
 }
 
-func NewService(n *nats.Client, m *mqtt.Client, cfg *config.Config, configPath string, googleHomes string, massURL string, piperURL string) *Service {
+func NewService(n *nats.Client, m *mqtt.Client, cfg *config.Config, configPath string, googleHomes string, massURL string, piperURL string, cacheDir string, callbackURL string) *Service {
 	s := &Service{
 		nats:       n,
 		mqtt:       m,
@@ -48,6 +50,8 @@ func NewService(n *nats.Client, m *mqtt.Client, cfg *config.Config, configPath s
 		lastFired:  make(map[string]time.Time),
 		massURL:    massURL,
 		piperURL:   piperURL,
+		cacheDir:   cacheDir,
+		callbackURL: callbackURL,
 	}
 
 	// Register providers
@@ -58,9 +62,9 @@ func NewService(n *nats.Client, m *mqtt.Client, cfg *config.Config, configPath s
 	tv := &provider.TVProvider{}
 	s.providers[tv.Name()] = tv
 
-	// Music Assistant Provider (for announcements via local Piper)
+	// Music Assistant Provider (for announcements via local Piper with Caching)
 	if massURL != "" {
-		mass := provider.NewMusicAssistantProvider(massURL, piperURL)
+		mass := provider.NewMusicAssistantProvider(massURL, piperURL, cacheDir, callbackURL)
 		s.providers[mass.Name()] = mass
 	}
 
@@ -69,6 +73,18 @@ func NewService(n *nats.Client, m *mqtt.Client, cfg *config.Config, configPath s
 
 func (s *Service) Run(ctx context.Context) error {
 	slog.Info("Starting IoT Notification Service...", "notifications_count", len(s.cfg.Notifications))
+
+	// Start local HTTP server for serving cached TTS files
+	if s.cacheDir != "" {
+		go func() {
+			slog.Info("Starting TTS cache server", "dir", s.cacheDir, "port", 8080)
+			fs := http.FileServer(http.Dir(s.cacheDir))
+			http.Handle("/cache/", http.StripPrefix("/cache/", fs))
+			if err := http.ListenAndServe(":8080", nil); err != nil {
+				slog.Error("TTS cache server failed", "error", err)
+			}
+		}()
+	}
 
 	// Discovery and State management (similar to presence-automation)
 	s.setupMuteSwitches()
