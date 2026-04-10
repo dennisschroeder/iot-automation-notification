@@ -160,7 +160,7 @@ func (m *MusicAssistantProvider) synthesizeSpeech(ctx context.Context, text stri
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		default:
-			line, err := reader.ReadString('\n')
+			line, err := reader.ReadBytes('\n')
 			if err != nil {
 				if err == io.EOF {
 					break
@@ -176,8 +176,9 @@ func (m *MusicAssistantProvider) synthesizeSpeech(ctx context.Context, text stri
 				} `json:"data"`
 			}
 
-			if err := json.Unmarshal([]byte(line), &event); err != nil {
-				slog.Warn("Failed to unmarshal Wyoming event", "line", line, "error", err)
+			if err := json.Unmarshal(line, &event); err != nil {
+				// Binary data might contain newlines, but Wyoming JSON headers should be valid.
+				// However, if we're here, it's likely a JSON header.
 				continue
 			}
 
