@@ -65,7 +65,7 @@ func NewService(n *nats.Client, m *mqtt.Client, cfg *config.Config, configPath s
 
 	// Music Assistant Provider (for announcements via local Piper with Caching)
 	if massURL != "" {
-		mass := provider.NewMusicAssistantProvider(massURL, piperURL, cacheDir, callbackURL)
+		mass := provider.NewMusicAssistantProvider(m, massURL, piperURL, cacheDir, callbackURL)
 		s.providers[mass.Name()] = mass
 	}
 
