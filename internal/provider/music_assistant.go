@@ -11,25 +11,25 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/dennisschroeder/iot-automation-notification/internal/config"
-	"github.com/dennisschroeder/iot-automation-notification/internal/transport/mqtt"
 )
 
 // MusicAssistantProvider sends announcements via Music Assistant JSON-RPC API.
 // It uses a local Piper service to generate the TTS audio.
 type MusicAssistantProvider struct {
-	mqttClient  *mqtt.Client
 	massURL     string
+	massToken   string
 	piperURL    string
 	cacheDir    string
 	callbackURL string
 }
 
-func NewMusicAssistantProvider(m *mqtt.Client, massURL, piperURL string, cacheDir string, callbackURL string) *MusicAssistantProvider {
+func NewMusicAssistantProvider(massURL, massToken, piperURL string, cacheDir string, callbackURL string) *MusicAssistantProvider {
 	if cacheDir != "" {
 		if err := os.MkdirAll(cacheDir, 0755); err != nil {
 			slog.Error("Failed to create cache directory", "path", cacheDir, "error", err)
@@ -37,8 +37,8 @@ func NewMusicAssistantProvider(m *mqtt.Client, massURL, piperURL string, cacheDi
 	}
 
 	return &MusicAssistantProvider{
-		mqttClient:  m,
 		massURL:     massURL,
+		massToken:   massToken,
 		piperURL:    piperURL,
 		cacheDir:    cacheDir,
 		callbackURL: callbackURL,
@@ -85,21 +85,46 @@ func (m *MusicAssistantProvider) Send(ctx context.Context, act config.Action) er
 		}
 	}
 
-	// 2. Prepare payload for HA service mass.play_announcement
+	// 2. Prepare payload for MAS JSON-RPC API
 	params := map[string]interface{}{
-		"entity_id": act.Target, // MUST BE an HA entity_id (e.g. media_player.ga_ben)
+		"player_id": act.Target,
 		"url":       audioURL,
-		"announce_volume": 50,
+		"volume_level": 50,
 	}
 
 	if audioURL == "" {
 		params["url"] = "tts://" + act.Message
 	}
 
-	jsonPayload, _ := json.Marshal(params)
-	slog.Info("Sending MQTT command to Home Assistant", "payload", string(jsonPayload))
+	payload := map[string]interface{}{
+		"message_id": "1",
+		"command": "players/cmd/play_announcement",
+		"args":    params,
+	}
+
+	jsonPayload, _ := json.Marshal(payload)
+	slog.Info("Sending JSON-RPC command to Music Assistant", "payload", string(jsonPayload))
 	
-	m.mqttClient.Publish("homeassistant/service/mass/play_announcement", jsonPayload)
+	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("%s/api", m.massURL), bytes.NewBuffer(jsonPayload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if m.massToken != "" {
+		req.Header.Set("Authorization", "Bearer " + m.massToken)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to call music assistant api: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("music assistant api returned status %d: %s", resp.StatusCode, string(body))
+	}
 
 	return nil
 }
