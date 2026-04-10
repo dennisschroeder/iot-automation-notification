@@ -83,10 +83,10 @@ func (m *MusicAssistantProvider) Send(ctx context.Context, act config.Action) er
 		}
 	}
 
-	// 2. Prepare JSON-RPC payload
+	// 2. Prepare JSON-RPC payload for Music Assistant 2.0+
 	params := map[string]interface{}{
-		"player_id":     act.Target,
-		"use_streaming": true,
+		"player_id":           act.Target,
+		"announcement_volume": 50,
 	}
 
 	if audioURL != "" {
@@ -98,16 +98,15 @@ func (m *MusicAssistantProvider) Send(ctx context.Context, act config.Action) er
 	}
 
 	payload := map[string]interface{}{
-		"id":      1,
-		"jsonrpc": "2.0",
-		"method":  "players/play_announcement",
-		"params":  params,
+		"message_id": "1",
+		"command":    "players/play_announcement",
+		"args":       params,
 	}
 
 	jsonPayload, _ := json.Marshal(payload)
-	slog.Debug("Sending JSON-RPC to Music Assistant", "payload", string(jsonPayload))
+	slog.Debug("Sending command to Music Assistant API", "payload", string(jsonPayload))
 	
-	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("%s/json-rpc", m.massURL), bytes.NewBuffer(jsonPayload))
+	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("%s/api", m.massURL), bytes.NewBuffer(jsonPayload))
 	if err != nil {
 		return err
 	}
