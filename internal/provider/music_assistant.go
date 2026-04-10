@@ -58,15 +58,24 @@ func (m *MusicAssistantProvider) Send(ctx context.Context, act config.Action) er
 
 		if _, err := os.Stat(filePath); os.IsNotExist(err) {
 			slog.Info("Generating new TTS audio", "message", act.Message)
-			audioData, err := m.synthesizeSpeech(act.Message)
+			
+			// Create a context with timeout for synthesis
+			synthCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+			
+			audioData, err := m.synthesizeSpeech(synthCtx, act.Message)
 			if err != nil {
 				slog.Warn("Piper synthesis failed, falling back to MAS internal TTS", "error", err)
 			} else if len(audioData) > 0 {
+				slog.Info("Successfully generated audio data", "bytes", len(audioData))
 				if err := os.WriteFile(filePath, audioData, 0644); err != nil {
 					slog.Error("Failed to save audio to cache", "error", err)
 				} else {
 					audioURL = fmt.Sprintf("%s/cache/%s", m.callbackURL, filename)
+					slog.Info("Audio saved to cache", "url", audioURL)
 				}
+			} else {
+				slog.Warn("Piper returned empty audio data")
 			}
 		} else {
 			slog.Info("Using cached TTS audio", "filename", filename)
@@ -82,8 +91,10 @@ func (m *MusicAssistantProvider) Send(ctx context.Context, act config.Action) er
 
 	if audioURL != "" {
 		params["url"] = audioURL
+		slog.Info("Using audio URL for MAS", "url", audioURL)
 	} else {
 		params["message"] = act.Message
+		slog.Info("Using direct message for MAS (fallback)")
 	}
 
 	payload := map[string]interface{}{
@@ -94,6 +105,7 @@ func (m *MusicAssistantProvider) Send(ctx context.Context, act config.Action) er
 	}
 
 	jsonPayload, _ := json.Marshal(payload)
+	slog.Debug("Sending JSON-RPC to Music Assistant", "payload", string(jsonPayload))
 	
 	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("%s/json-rpc", m.massURL), bytes.NewBuffer(jsonPayload))
 	if err != nil {
@@ -119,62 +131,127 @@ func (m *MusicAssistantProvider) Send(ctx context.Context, act config.Action) er
 // synthesizeSpeech is a placeholder for the Wyoming protocol implementation.
 // For the first iteration, we rely on MAS's internal TTS provider configuration
 // as discussed, but keep this hook for future local Piper direct streaming.
-func (m *MusicAssistantProvider) synthesizeSpeech(text string) ([]byte, error) {
+func (m *MusicAssistantProvider) synthesizeSpeech(ctx context.Context, text string) ([]byte, error) {
 	if m.piperURL == "" {
 		return nil, nil
 	}
 
-	conn, err := net.DialTimeout("tcp", m.piperURL, 2*time.Second)
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", m.piperURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to piper: %w", err)
 	}
 	defer conn.Close()
 
 	// 1. Send Synthesize Event
-	// Wyoming Event: JSON\n[Binary]
 	synthesizeEvent := fmt.Sprintf(`{"type": "synthesize", "data": {"text": "%s"}}`+"\n", text)
+	slog.Debug("Sending synthesize event to Piper", "event", synthesizeEvent)
 	if _, err := conn.Write([]byte(synthesizeEvent)); err != nil {
 		return nil, fmt.Errorf("failed to send synthesize event: %w", err)
 	}
 
-	var audioBuffer bytes.Buffer
+	var rawBuffer bytes.Buffer
 	reader := bufio.NewReader(conn)
+	sampleRate := 22050 // Default for Piper Kerstin
 
 	// 2. Read Response Events
 	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, fmt.Errorf("failed to read wyoming event: %w", err)
-		}
-
-		var event struct {
-			Type          string `json:"type"`
-			PayloadLength int    `json:"payload_length"`
-		}
-
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			continue
-		}
-
-		// Read binary payload if present
-		if event.PayloadLength > 0 {
-			payload := make([]byte, event.PayloadLength)
-			if _, err := io.ReadFull(reader, payload); err != nil {
-				return nil, fmt.Errorf("failed to read payload: %w", err)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				return nil, fmt.Errorf("failed to read wyoming event: %w", err)
 			}
 
-			if event.Type == "audio-chunk" {
-				audioBuffer.Write(payload)
+			var event struct {
+				Type          string `json:"type"`
+				PayloadLength int    `json:"payload_length"`
+				Data          struct {
+					Rate int `json:"rate"`
+				} `json:"data"`
 			}
-		}
 
-		if event.Type == "audio-stop" {
-			break
+			if err := json.Unmarshal([]byte(line), &event); err != nil {
+				slog.Warn("Failed to unmarshal Wyoming event", "line", line, "error", err)
+				continue
+			}
+
+			if event.Data.Rate > 0 {
+				sampleRate = event.Data.Rate
+			}
+
+			// Read binary payload if present
+			if event.PayloadLength > 0 {
+				payload := make([]byte, event.PayloadLength)
+				if _, err := io.ReadFull(reader, payload); err != nil {
+					return nil, fmt.Errorf("failed to read payload: %w", err)
+				}
+
+				if event.Type == "audio-chunk" {
+					rawBuffer.Write(payload)
+				}
+			}
+
+			if event.Type == "audio-stop" {
+				slog.Debug("Received audio-stop from Piper")
+				goto done
+			}
 		}
 	}
 
-	return audioBuffer.Bytes(), nil
+done:
+	if rawBuffer.Len() == 0 {
+		return nil, nil
+	}
+
+	// 3. Add WAV Header
+	return addWavHeader(rawBuffer.Bytes(), sampleRate), nil
+}
+
+func addWavHeader(pcmData []byte, sampleRate int) []byte {
+	bitsPerSample := 16
+	channels := 1
+	byteRate := sampleRate * channels * bitsPerSample / 8
+	blockAlign := channels * bitsPerSample / 8
+	dataSize := len(pcmData)
+	chunkSize := 36 + dataSize
+
+	header := new(bytes.Buffer)
+	header.Write([]byte("RIFF"))
+	header.Write(uint32ToBytes(uint32(chunkSize)))
+	header.Write([]byte("WAVE"))
+	header.Write([]byte("fmt "))
+	header.Write(uint32ToBytes(uint32(16))) // Subchunk1Size
+	header.Write(uint16ToBytes(uint16(1)))  // AudioFormat (PCM)
+	header.Write(uint16ToBytes(uint16(channels)))
+	header.Write(uint32ToBytes(uint32(sampleRate)))
+	header.Write(uint32ToBytes(uint32(byteRate)))
+	header.Write(uint16ToBytes(uint16(blockAlign)))
+	header.Write(uint16ToBytes(uint16(bitsPerSample)))
+	header.Write([]byte("data"))
+	header.Write(uint32ToBytes(uint32(dataSize)))
+	header.Write(pcmData)
+
+	return header.Bytes()
+}
+
+func uint32ToBytes(v uint32) []byte {
+	b := make([]byte, 4)
+	b[0] = byte(v)
+	b[1] = byte(v >> 8)
+	b[2] = byte(v >> 16)
+	b[3] = byte(v >> 24)
+	return b
+}
+
+func uint16ToBytes(v uint16) []byte {
+	b := make([]byte, 2)
+	b[0] = byte(v)
+	b[1] = byte(v >> 8)
+	return b
 }
