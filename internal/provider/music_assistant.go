@@ -169,16 +169,27 @@ func (m *MusicAssistantProvider) synthesizeSpeech(ctx context.Context, text stri
 			return nil, fmt.Errorf("failed to read wyoming header: %w", err)
 		}
 
+		// Robustness: Skip any binary garbage before the JSON header
+		if !bytes.HasPrefix(bytes.TrimSpace(line), []byte("{")) {
+			idx := bytes.Index(line, []byte("{"))
+			if idx == -1 {
+				slog.Debug("Skipping non-JSON line from Piper", "len", len(line))
+				continue
+			}
+			line = line[idx:]
+		}
+
 		var event struct {
 			Type          string `json:"type"`
-			PayloadLength int    `json:"payload_length"`
+			PayloadLength *int   `json:"payload_length"`
+			DataLength    *int   `json:"data_length"`
 			Data          struct {
 				Rate int `json:"rate"`
 			} `json:"data"`
 		}
 
 		if err := json.Unmarshal(line, &event); err != nil {
-			// This might be a partial read or binary data if we lost sync
+			// This might be binary data if we lost sync
 			slog.Warn("Failed to unmarshal Wyoming header", "line_len", len(line), "error", err)
 			continue
 		}
@@ -188,8 +199,16 @@ func (m *MusicAssistantProvider) synthesizeSpeech(ctx context.Context, text stri
 		}
 
 		// 3. Read binary payload if present
-		if event.PayloadLength > 0 {
-			payload := make([]byte, event.PayloadLength)
+		// Check both payload_length and data_length as some Wyoming versions use different names
+		length := 0
+		if event.PayloadLength != nil {
+			length = *event.PayloadLength
+		} else if event.DataLength != nil {
+			length = *event.DataLength
+		}
+
+		if length > 0 {
+			payload := make([]byte, length)
 			if _, err := io.ReadFull(reader, payload); err != nil {
 				return nil, fmt.Errorf("failed to read binary payload: %w", err)
 			}
