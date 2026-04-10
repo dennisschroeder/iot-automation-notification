@@ -56,7 +56,7 @@ func (m *MusicAssistantProvider) Send(ctx context.Context, act config.Action) er
 
 	// 1. Check Cache and Generate Audio via Piper if needed
 	if m.cacheDir != "" && m.callbackURL != "" {
-		hash := sha256.Sum256([]byte(act.Message + "_v2"))
+		hash := sha256.Sum256([]byte(act.Message + "_v3"))
 		filename := hex.EncodeToString(hash[:]) + ".wav"
 		filePath := filepath.Join(m.cacheDir, filename)
 
@@ -210,8 +210,12 @@ func (m *MusicAssistantProvider) synthesizeSpeech(ctx context.Context, text stri
 			if _, err := io.ReadFull(reader, dataPayload); err != nil {
 				return nil, fmt.Errorf("failed to read data payload: %w", err)
 			}
-			// We can optionally parse dataPayload here if needed, 
-			// but we already get Rate from the main event JSON if it was nested properly.
+			var dataObj struct {
+				Rate int `json:"rate"`
+			}
+			if err := json.Unmarshal(dataPayload, &dataObj); err == nil && dataObj.Rate > 0 {
+				sampleRate = dataObj.Rate
+			}
 		}
 
 		// 4. Read binary audio payload if present
