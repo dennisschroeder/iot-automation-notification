@@ -85,22 +85,23 @@ func (m *MusicAssistantProvider) Send(ctx context.Context, act config.Action) er
 
 	// 2. Prepare JSON-RPC payload for Music Assistant 2.0+
 	params := map[string]interface{}{
-		"player_id":           act.Target,
-		"announcement_volume": 50,
+		"player_id": act.Target,
+		"announcement": map[string]interface{}{
+			"uri":        audioURL,
+			"media_type": "announcement",
+		},
+		"volume_level": 50,
 	}
 
-	if audioURL != "" {
-		params["url"] = audioURL
-		slog.Info("Using audio URL for MAS", "url", audioURL)
-	} else {
-		params["message"] = act.Message
-		slog.Info("Using direct message for MAS (fallback)")
+	if audioURL == "" {
+		params["announcement"].(map[string]interface{})["uri"] = "tts://" + act.Message
 	}
 
 	payload := map[string]interface{}{
-		"message_id": "1",
-		"command":    "players/play_announcement",
-		"args":       params,
+		"jsonrpc": "2.0",
+		"id":      1,
+		"command": "players/play_announcement",
+		"args":    params,
 	}
 
 	jsonPayload, _ := json.Marshal(payload)
