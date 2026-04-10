@@ -195,17 +195,29 @@ func (m *MusicAssistantProvider) synthesizeSpeech(ctx context.Context, text stri
 			sampleRate = event.Data.Rate
 		}
 
-		// 3. Read binary payload if present
-		// Check both payload_length and data_length as some Wyoming versions use different names
-		length := 0
-		if event.PayloadLength != nil {
-			length = *event.PayloadLength
-		} else if event.DataLength != nil {
-			length = *event.DataLength
+		// 3. Read data payload if present (JSON string)
+		dataLen := 0
+		if event.DataLength != nil {
+			dataLen = *event.DataLength
 		}
 
-		if length > 0 {
-			payload := make([]byte, length)
+		if dataLen > 0 {
+			dataPayload := make([]byte, dataLen)
+			if _, err := io.ReadFull(reader, dataPayload); err != nil {
+				return nil, fmt.Errorf("failed to read data payload: %w", err)
+			}
+			// We can optionally parse dataPayload here if needed, 
+			// but we already get Rate from the main event JSON if it was nested properly.
+		}
+
+		// 4. Read binary audio payload if present
+		payloadLen := 0
+		if event.PayloadLength != nil {
+			payloadLen = *event.PayloadLength
+		}
+
+		if payloadLen > 0 {
+			payload := make([]byte, payloadLen)
 			if _, err := io.ReadFull(reader, payload); err != nil {
 				return nil, fmt.Errorf("failed to read binary payload: %w", err)
 			}

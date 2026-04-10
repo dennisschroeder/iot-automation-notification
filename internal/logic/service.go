@@ -254,15 +254,21 @@ func (s *Service) evaluateAndExecute(ctx context.Context, rule config.Notificati
 	}
 
 	// 3. Execute Actions
+	var wg sync.WaitGroup
 	for _, act := range rule.Actions {
-		if p, ok := s.providers[act.Channel]; ok {
-			if err := p.Send(ctx, act); err != nil {
-				slog.Error("Failed to send notification", "rule", rule.ID, "channel", act.Channel, "error", err)
+		wg.Add(1)
+		go func(a config.Action) {
+			defer wg.Done()
+			if p, ok := s.providers[a.Channel]; ok {
+				if err := p.Send(ctx, a); err != nil {
+					slog.Error("Failed to send notification", "rule", rule.ID, "channel", a.Channel, "error", err)
+				}
+			} else {
+				slog.Warn("Unknown notification channel", "channel", a.Channel)
 			}
-		} else {
-			slog.Warn("Unknown notification channel", "channel", act.Channel)
-		}
+		}(act)
 	}
+	wg.Wait()
 }
 
 func (s *Service) checkCondition(cond config.Condition) bool {
