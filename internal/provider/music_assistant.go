@@ -125,6 +125,10 @@ func (m *MusicAssistantProvider) Send(ctx context.Context, act config.Action) er
 		return fmt.Errorf("music assistant api returned status %d: %s", resp.StatusCode, string(body))
 	}
 
+	// Log response for debugging player IDs
+	body, _ := io.ReadAll(resp.Body)
+	slog.Info("Music Assistant response", "body", string(body))
+
 	return nil
 }
 
@@ -156,61 +160,56 @@ func (m *MusicAssistantProvider) synthesizeSpeech(ctx context.Context, text stri
 
 	// 2. Read Response Events
 	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-			line, err := reader.ReadBytes('\n')
-			if err != nil {
-				if err == io.EOF {
-					break
-				}
-				return nil, fmt.Errorf("failed to read wyoming event: %w", err)
+		// Read JSON header line
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, fmt.Errorf("failed to read wyoming header: %w", err)
+		}
+
+		var event struct {
+			Type          string `json:"type"`
+			PayloadLength int    `json:"payload_length"`
+			Data          struct {
+				Rate int `json:"rate"`
+			} `json:"data"`
+		}
+
+		if err := json.Unmarshal(line, &event); err != nil {
+			// This might be a partial read or binary data if we lost sync
+			slog.Warn("Failed to unmarshal Wyoming header", "line_len", len(line), "error", err)
+			continue
+		}
+
+		if event.Data.Rate > 0 {
+			sampleRate = event.Data.Rate
+		}
+
+		// 3. Read binary payload if present
+		if event.PayloadLength > 0 {
+			payload := make([]byte, event.PayloadLength)
+			if _, err := io.ReadFull(reader, payload); err != nil {
+				return nil, fmt.Errorf("failed to read binary payload: %w", err)
 			}
 
-			var event struct {
-				Type          string `json:"type"`
-				PayloadLength int    `json:"payload_length"`
-				Data          struct {
-					Rate int `json:"rate"`
-				} `json:"data"`
+			if event.Type == "audio-chunk" {
+				rawBuffer.Write(payload)
 			}
+		}
 
-			if err := json.Unmarshal(line, &event); err != nil {
-				// Binary data might contain newlines, but Wyoming JSON headers should be valid.
-				// However, if we're here, it's likely a JSON header.
-				continue
-			}
-
-			if event.Data.Rate > 0 {
-				sampleRate = event.Data.Rate
-			}
-
-			// Read binary payload if present
-			if event.PayloadLength > 0 {
-				payload := make([]byte, event.PayloadLength)
-				if _, err := io.ReadFull(reader, payload); err != nil {
-					return nil, fmt.Errorf("failed to read payload: %w", err)
-				}
-
-				if event.Type == "audio-chunk" {
-					rawBuffer.Write(payload)
-				}
-			}
-
-			if event.Type == "audio-stop" {
-				slog.Debug("Received audio-stop from Piper")
-				goto done
-			}
+		if event.Type == "audio-stop" {
+			slog.Debug("Received audio-stop from Piper")
+			break
 		}
 	}
 
-done:
 	if rawBuffer.Len() == 0 {
 		return nil, nil
 	}
 
-	// 3. Add WAV Header
+	// 4. Add WAV Header
 	return addWavHeader(rawBuffer.Bytes(), sampleRate), nil
 }
 
