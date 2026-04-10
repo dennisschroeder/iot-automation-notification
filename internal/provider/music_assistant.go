@@ -56,7 +56,7 @@ func (m *MusicAssistantProvider) Send(ctx context.Context, act config.Action) er
 
 	// 1. Check Cache and Generate Audio via Piper if needed
 	if m.cacheDir != "" && m.callbackURL != "" {
-		hash := sha256.Sum256([]byte(act.Message))
+		hash := sha256.Sum256([]byte(act.Message + "_v2"))
 		filename := hex.EncodeToString(hash[:]) + ".wav"
 		filePath := filepath.Join(m.cacheDir, filename)
 
