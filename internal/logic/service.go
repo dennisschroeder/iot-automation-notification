@@ -230,7 +230,7 @@ func (s *Service) evaluateAndExecute(ctx context.Context, rule config.Notificati
 	// 0. Debounce Check
 	s.mu.Lock()
 	if last, ok := s.lastFired[rule.ID]; ok {
-		if time.Since(last) < 2*time.Second {
+		if time.Since(last) < 10*time.Second {
 			slog.Debug("Debouncing rule execution", "rule", rule.ID)
 			s.mu.Unlock()
 			return

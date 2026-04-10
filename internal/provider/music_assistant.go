@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/dennisschroeder/iot-automation-notification/internal/config"
@@ -27,6 +28,7 @@ type MusicAssistantProvider struct {
 	piperURL    string
 	cacheDir    string
 	callbackURL string
+	mu          sync.Mutex
 }
 
 func NewMusicAssistantProvider(massURL, massToken, piperURL string, cacheDir string, callbackURL string) *MusicAssistantProvider {
@@ -58,6 +60,7 @@ func (m *MusicAssistantProvider) Send(ctx context.Context, act config.Action) er
 		filename := hex.EncodeToString(hash[:]) + ".wav"
 		filePath := filepath.Join(m.cacheDir, filename)
 
+		m.mu.Lock()
 		if _, err := os.Stat(filePath); os.IsNotExist(err) {
 			slog.Info("Generating new TTS audio", "message", act.Message)
 			
@@ -83,6 +86,7 @@ func (m *MusicAssistantProvider) Send(ctx context.Context, act config.Action) er
 			slog.Info("Using cached TTS audio", "filename", filename)
 			audioURL = fmt.Sprintf("%s/cache/%s", m.callbackURL, filename)
 		}
+		m.mu.Unlock()
 	}
 
 	// 2. Prepare payload for MAS JSON-RPC API
