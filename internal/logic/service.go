@@ -5,12 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
-	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/dennisschroeder/iot-automation-notification/internal/config"
@@ -41,6 +38,8 @@ type Service struct {
 	providers   map[string]provider.NotificationProvider
 	lastFired   map[string]time.Time
 	mu          sync.Mutex
+	inflight    sync.WaitGroup
+	closing     bool
 	massURL     string
 	massToken   string
 	piperURL    string
@@ -102,7 +101,7 @@ func (s *Service) Run(ctx context.Context) error {
 
 	// Subscribe to ALL v1 events
 	subject := "iot.v1.events.>"
-	_, err := s.nats.Subscribe(subject, func(msg *natsgo.Msg) {
+	sub, err := s.nats.Subscribe(subject, func(msg *natsgo.Msg) {
 		var env envelope.EventEnvelope
 		if err := proto.Unmarshal(msg.Data, &env); err != nil {
 			return
@@ -123,17 +122,41 @@ func (s *Service) Run(ctx context.Context) error {
 		return fmt.Errorf("nats subscribe failed: %w", err)
 	}
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-
-	select {
-	case <-ctx.Done():
-		slog.Info("Context cancelled, shutting down")
-	case sig := <-stop:
-		slog.Info("Signal received, shutting down", "signal", sig)
+	<-ctx.Done()
+	slog.Info("Shutting down, waiting for in-flight notifications", "timeout", shutdownTimeout)
+	if err := sub.Unsubscribe(); err != nil {
+		slog.Warn("NATS unsubscribe failed", "error", err)
+	}
+	if !s.shutdown(shutdownTimeout) {
+		slog.Warn("In-flight notifications did not finish before shutdown timeout")
 	}
 
 	return nil
+}
+
+const shutdownTimeout = 5 * time.Second
+
+// shutdown stops new executions from being started and waits up to timeout for
+// running ones. Setting closing under s.mu guarantees no inflight.Add races Wait.
+func (s *Service) shutdown(timeout time.Duration) bool {
+	s.mu.Lock()
+	s.closing = true
+	s.mu.Unlock()
+	return s.waitInflight(timeout)
+}
+
+func (s *Service) waitInflight(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		s.inflight.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 func (s *Service) setupMuteSwitches() {
@@ -243,21 +266,27 @@ func (s *Service) evaluateAndExecute(ctx context.Context, rule config.Notificati
 		slog.Debug("Debouncing rule execution", "rule", rule.ID)
 		return
 	}
-	go s.execute(ctx, rule)
+	go func() {
+		defer s.inflight.Done()
+		// Detached from shutdown cancellation so a notification already underway
+		// can complete within the shutdown grace period.
+		s.execute(context.WithoutCancel(ctx), rule)
+	}()
 }
 
+// claimDebounce reserves an execution slot for rule; on success the caller must
+// call s.inflight.Done() once the execution has finished.
 func (s *Service) claimDebounce(rule config.NotificationRule) bool {
-	window := rule.Debounce
-	if window <= 0 {
-		window = config.DefaultDebounce
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if last, ok := s.lastFired[rule.ID]; ok && time.Since(last) < window {
+	if s.closing {
+		return false
+	}
+	if last, ok := s.lastFired[rule.ID]; ok && time.Since(last) < rule.Debounce {
 		return false
 	}
 	s.lastFired[rule.ID] = time.Now()
+	s.inflight.Add(1)
 	return true
 }
 

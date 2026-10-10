@@ -15,6 +15,9 @@ func TestLoadConfigDebounce(t *testing.T) {
     trigger: {device: "a", state: "ON"}
   - id: "default"
     trigger: {device: "b", state: "ON"}
+  - id: "zero"
+    debounce: 0s
+    trigger: {device: "c", state: "ON"}
 `
 	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
@@ -29,5 +32,19 @@ func TestLoadConfigDebounce(t *testing.T) {
 	}
 	if got := cfg.Notifications[1].Debounce; got != DefaultDebounce {
 		t.Errorf("default debounce: got %v, want %v", got, DefaultDebounce)
+	}
+	if got := cfg.Notifications[2].Debounce; got != DefaultDebounce {
+		t.Errorf("zero debounce: got %v, want %v", got, DefaultDebounce)
+	}
+}
+
+func TestLoadConfigDebounceRequiresUnit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	yaml := "notifications:\n  - id: x\n    debounce: 30\n"
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("expected error for debounce without unit")
 	}
 }

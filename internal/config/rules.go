@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -36,11 +37,16 @@ type Action struct {
 const DefaultDebounce = 30 * time.Second
 
 type NotificationRule struct {
-	ID         string        `yaml:"id"`
-	Trigger    Trigger       `yaml:"trigger"`
-	Debounce   time.Duration `yaml:"debounce,omitempty"` // e.g. "30s"; defaults to DefaultDebounce
-	Conditions []Condition   `yaml:"conditions"`
-	Actions    []Action      `yaml:"actions"`
+	ID         string      `yaml:"id"`
+	Trigger    Trigger     `yaml:"trigger"`
+	Conditions []Condition `yaml:"conditions"`
+	Actions    []Action    `yaml:"actions"`
+
+	// RawDebounce distinguishes "not set" from an explicit non-positive value.
+	// Requires a unit, e.g. "30s" (a bare number fails to load).
+	RawDebounce *time.Duration `yaml:"debounce,omitempty"`
+	// Debounce is the effective window, resolved by LoadConfig.
+	Debounce time.Duration `yaml:"-"`
 }
 
 type Config struct {
@@ -67,8 +73,14 @@ func LoadConfig(path string) (*Config, error) {
 		if rule.Trigger.Type == "" {
 			rule.Trigger.Type = "binary_sensor"
 		}
-		if rule.Debounce <= 0 {
+		switch {
+		case rule.RawDebounce == nil:
 			rule.Debounce = DefaultDebounce
+		case *rule.RawDebounce <= 0:
+			slog.Warn("Non-positive debounce ignored, using default", "rule", rule.ID, "debounce", rule.RawDebounce.String(), "default", DefaultDebounce.String())
+			rule.Debounce = DefaultDebounce
+		default:
+			rule.Debounce = *rule.RawDebounce
 		}
 	}
 

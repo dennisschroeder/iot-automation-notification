@@ -55,7 +55,7 @@ var doorbellOn = &binary_sensor.BinarySensorEvent{
 
 func TestDoorbellBurstWithSlowProviderFiresOnce(t *testing.T) {
 	p := &slowProvider{delay: 300 * time.Millisecond}
-	s := newTestService(p, 0) // 0 -> DefaultDebounce
+	s := newTestService(p, config.DefaultDebounce)
 
 	start := time.Now()
 	for i := 0; i < 4; i++ {
@@ -65,7 +65,9 @@ func TestDoorbellBurstWithSlowProviderFiresOnce(t *testing.T) {
 		t.Fatalf("event handling blocked on provider for %v", elapsed)
 	}
 
-	time.Sleep(2 * p.delay)
+	if !s.waitInflight(time.Second) {
+		t.Fatal("executions did not finish")
+	}
 	if got := p.calls.Load(); got != 1 {
 		t.Fatalf("expected exactly 1 execution, got %d", got)
 	}
@@ -77,11 +79,35 @@ func TestDebounceWindowExpires(t *testing.T) {
 
 	s.handleBinarySensorEvent(context.Background(), doorbellOn)
 	s.handleBinarySensorEvent(context.Background(), doorbellOn)
-	time.Sleep(80 * time.Millisecond)
+	time.Sleep(80 * time.Millisecond) // let the 50ms window expire
 	s.handleBinarySensorEvent(context.Background(), doorbellOn)
-	time.Sleep(20 * time.Millisecond)
+	if !s.waitInflight(time.Second) {
+		t.Fatal("executions did not finish")
+	}
 
 	if got := p.calls.Load(); got != 2 {
 		t.Fatalf("expected 2 executions (one per window), got %d", got)
+	}
+}
+
+func TestShutdownRejectsNewExecutionsAndWaitsForInflight(t *testing.T) {
+	p := &slowProvider{delay: 100 * time.Millisecond}
+	s := newTestService(p, config.DefaultDebounce)
+
+	s.handleBinarySensorEvent(context.Background(), doorbellOn)
+	if !s.shutdown(time.Second) {
+		t.Fatal("shutdown timed out")
+	}
+	if got := p.calls.Load(); got != 1 {
+		t.Fatalf("expected in-flight execution to complete, got %d calls", got)
+	}
+
+	s.lastFired = make(map[string]time.Time)
+	s.handleBinarySensorEvent(context.Background(), doorbellOn)
+	if !s.waitInflight(time.Second) {
+		t.Fatal("unexpected in-flight execution")
+	}
+	if got := p.calls.Load(); got != 1 {
+		t.Fatalf("expected no execution after shutdown, got %d calls", got)
 	}
 }
