@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -30,11 +31,16 @@ type Action struct {
 	Data    map[string]interface{} `yaml:"data"`
 }
 
+// DefaultDebounce suppresses repeated triggers of the same rule. Doorbells emit
+// several ON events per ring (bounce, repeated presses), so 10s was too short.
+const DefaultDebounce = 30 * time.Second
+
 type NotificationRule struct {
-	ID         string      `yaml:"id"`
-	Trigger    Trigger     `yaml:"trigger"`
-	Conditions []Condition `yaml:"conditions"`
-	Actions    []Action    `yaml:"actions"`
+	ID         string        `yaml:"id"`
+	Trigger    Trigger       `yaml:"trigger"`
+	Debounce   time.Duration `yaml:"debounce,omitempty"` // e.g. "30s"; defaults to DefaultDebounce
+	Conditions []Condition   `yaml:"conditions"`
+	Actions    []Action      `yaml:"actions"`
 }
 
 type Config struct {
@@ -60,6 +66,9 @@ func LoadConfig(path string) (*Config, error) {
 		}
 		if rule.Trigger.Type == "" {
 			rule.Trigger.Type = "binary_sensor"
+		}
+		if rule.Debounce <= 0 {
+			rule.Debounce = DefaultDebounce
 		}
 	}
 

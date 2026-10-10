@@ -25,35 +25,43 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// kvReader is the subset of the NATS client needed for rule evaluation; it allows
+// exercising the evaluation path in tests without a NATS server.
+type kvReader interface {
+	GetKV(key string) (string, error)
+}
+
 type Service struct {
-	nats       *nats.Client
-	mqtt       *mqtt.Client
-	cfg        *config.Config
-	configPath string
-	activeIDs  map[string]bool
-	providers  map[string]provider.NotificationProvider
-	lastFired  map[string]time.Time
-	mu         sync.Mutex
-	massURL    string
-	massToken  string
-	piperURL   string
-	cacheDir   string
+	nats        *nats.Client
+	kv          kvReader
+	mqtt        *mqtt.Client
+	cfg         *config.Config
+	configPath  string
+	activeIDs   map[string]bool
+	providers   map[string]provider.NotificationProvider
+	lastFired   map[string]time.Time
+	mu          sync.Mutex
+	massURL     string
+	massToken   string
+	piperURL    string
+	cacheDir    string
 	callbackURL string
 }
 
 func NewService(n *nats.Client, m *mqtt.Client, cfg *config.Config, configPath string, googleHomes string, massURL string, massToken string, piperURL string, cacheDir string, callbackURL string) *Service {
 	s := &Service{
-		nats:       n,
-		mqtt:       m,
-		cfg:        cfg,
-		configPath: configPath,
-		activeIDs:  make(map[string]bool),
-		providers:  make(map[string]provider.NotificationProvider),
-		lastFired:  make(map[string]time.Time),
-		massURL:    massURL,
-		massToken:  massToken,
-		piperURL:   piperURL,
-		cacheDir:   cacheDir,
+		nats:        n,
+		kv:          n,
+		mqtt:        m,
+		cfg:         cfg,
+		configPath:  configPath,
+		activeIDs:   make(map[string]bool),
+		providers:   make(map[string]provider.NotificationProvider),
+		lastFired:   make(map[string]time.Time),
+		massURL:     massURL,
+		massToken:   massToken,
+		piperURL:    piperURL,
+		cacheDir:    cacheDir,
 		callbackURL: callbackURL,
 	}
 
@@ -190,7 +198,7 @@ func (s *Service) handleBinarySensorEvent(ctx context.Context, bs *binary_sensor
 		match := false
 		for _, dName := range rule.Trigger.Devices {
 			slog.Info("Checking rule trigger", "rule", rule.ID, "target_device", dName, "event_device", bs.EntityId, "event_state", stateStr, "expected_state", rule.Trigger.State)
-			if (bs.EntityId == dName || strings.HasSuffix(bs.EntityId, "."+dName)) && 
+			if (bs.EntityId == dName || strings.HasSuffix(bs.EntityId, "."+dName)) &&
 				rule.Trigger.Type == "binary_sensor" && rule.Trigger.State == stateStr {
 				match = true
 				break
@@ -213,7 +221,7 @@ func (s *Service) handleLightEvent(ctx context.Context, l *light.LightEvent) {
 	for _, rule := range s.cfg.Notifications {
 		match := false
 		for _, dName := range rule.Trigger.Devices {
-			if (l.EntityId == dName || strings.HasSuffix(l.EntityId, "."+dName)) && 
+			if (l.EntityId == dName || strings.HasSuffix(l.EntityId, "."+dName)) &&
 				rule.Trigger.Type == "light" && rule.Trigger.State == stateStr {
 				match = true
 				break
@@ -226,22 +234,37 @@ func (s *Service) handleLightEvent(ctx context.Context, l *light.LightEvent) {
 	}
 }
 
+// evaluateAndExecute runs inside the NATS subscription callback, which delivers
+// messages sequentially. The debounce is claimed synchronously here, while the
+// (potentially slow) providers run in a goroutine: otherwise events buffered behind
+// a blocked callback arrive after the window has already elapsed and fire again.
 func (s *Service) evaluateAndExecute(ctx context.Context, rule config.NotificationRule) {
-	// 0. Debounce Check
+	if !s.claimDebounce(rule) {
+		slog.Debug("Debouncing rule execution", "rule", rule.ID)
+		return
+	}
+	go s.execute(ctx, rule)
+}
+
+func (s *Service) claimDebounce(rule config.NotificationRule) bool {
+	window := rule.Debounce
+	if window <= 0 {
+		window = config.DefaultDebounce
+	}
+
 	s.mu.Lock()
-	if last, ok := s.lastFired[rule.ID]; ok {
-		if time.Since(last) < 10*time.Second {
-			slog.Debug("Debouncing rule execution", "rule", rule.ID)
-			s.mu.Unlock()
-			return
-		}
+	defer s.mu.Unlock()
+	if last, ok := s.lastFired[rule.ID]; ok && time.Since(last) < window {
+		return false
 	}
 	s.lastFired[rule.ID] = time.Now()
-	s.mu.Unlock()
+	return true
+}
 
+func (s *Service) execute(ctx context.Context, rule config.NotificationRule) {
 	// 1. Mute/Lock Check
 	lockKey := fmt.Sprintf("lock.%s", rule.ID)
-	lockVal, _ := s.nats.GetKV(lockKey)
+	lockVal, _ := s.kv.GetKV(lockKey)
 	if lockVal == "true" {
 		return
 	}
@@ -277,7 +300,7 @@ func (s *Service) checkCondition(cond config.Condition) bool {
 		return true // Implement actual time logic if needed
 	}
 
-	valStr, err := s.nats.GetKV(cond.Device)
+	valStr, err := s.kv.GetKV(cond.Device)
 	if err != nil {
 		if cond.Default != nil {
 			valStr = fmt.Sprintf("%v", cond.Default)
@@ -299,10 +322,14 @@ func (s *Service) checkCondition(cond config.Condition) bool {
 			return false
 		}
 		switch cond.Operator {
-		case "<": return valFloat < targetFloat
-		case ">": return valFloat > targetFloat
-		case "<=": return valFloat <= targetFloat
-		case ">=": return valFloat >= targetFloat
+		case "<":
+			return valFloat < targetFloat
+		case ">":
+			return valFloat > targetFloat
+		case "<=":
+			return valFloat <= targetFloat
+		case ">=":
+			return valFloat >= targetFloat
 		}
 	}
 	return false
