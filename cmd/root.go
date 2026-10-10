@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/dennisschroeder/iot-automation-notification/internal/config"
 	"github.com/dennisschroeder/iot-automation-notification/internal/logic"
@@ -52,8 +54,16 @@ var rootCmd = &cobra.Command{
 		}
 		defer mClient.Close()
 
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		go func() {
+			<-ctx.Done()
+			// Restore default signal handling so a second SIGINT/SIGTERM during
+			// the shutdown drain terminates immediately.
+			stop()
+		}()
+
 		svc := logic.NewService(nClient, mClient, cfg, configPath, googleHomes, massURL, massToken, piperURL, cacheDir, callbackURL)
-		if err := svc.Run(context.Background()); err != nil {
+		if err := svc.Run(ctx); err != nil {
 			slog.Error("Service execution failed", "error", err)
 			os.Exit(1)
 		}

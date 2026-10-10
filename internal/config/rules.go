@@ -2,7 +2,9 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -30,11 +32,21 @@ type Action struct {
 	Data    map[string]interface{} `yaml:"data"`
 }
 
+// DefaultDebounce suppresses repeated triggers of the same rule. Doorbells emit
+// several ON events per ring (bounce, repeated presses), so 10s was too short.
+const DefaultDebounce = 30 * time.Second
+
 type NotificationRule struct {
 	ID         string      `yaml:"id"`
 	Trigger    Trigger     `yaml:"trigger"`
 	Conditions []Condition `yaml:"conditions"`
 	Actions    []Action    `yaml:"actions"`
+
+	// RawDebounce distinguishes "not set" from an explicit non-positive value.
+	// Requires a unit, e.g. "30s" (a bare number fails to load).
+	RawDebounce *time.Duration `yaml:"debounce,omitempty"`
+	// Debounce is the effective window, resolved by LoadConfig.
+	Debounce time.Duration `yaml:"-"`
 }
 
 type Config struct {
@@ -60,6 +72,15 @@ func LoadConfig(path string) (*Config, error) {
 		}
 		if rule.Trigger.Type == "" {
 			rule.Trigger.Type = "binary_sensor"
+		}
+		switch {
+		case rule.RawDebounce == nil:
+			rule.Debounce = DefaultDebounce
+		case *rule.RawDebounce <= 0:
+			slog.Warn("Non-positive debounce ignored, using default", "rule", rule.ID, "debounce", rule.RawDebounce.String(), "default", DefaultDebounce.String())
+			rule.Debounce = DefaultDebounce
+		default:
+			rule.Debounce = *rule.RawDebounce
 		}
 	}
 

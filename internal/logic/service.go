@@ -5,12 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
-	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/dennisschroeder/iot-automation-notification/internal/config"
@@ -25,35 +22,45 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// kvReader is the subset of the NATS client needed for rule evaluation; it allows
+// exercising the evaluation path in tests without a NATS server.
+type kvReader interface {
+	GetKV(key string) (string, error)
+}
+
 type Service struct {
-	nats       *nats.Client
-	mqtt       *mqtt.Client
-	cfg        *config.Config
-	configPath string
-	activeIDs  map[string]bool
-	providers  map[string]provider.NotificationProvider
-	lastFired  map[string]time.Time
-	mu         sync.Mutex
-	massURL    string
-	massToken  string
-	piperURL   string
-	cacheDir   string
+	nats        *nats.Client
+	kv          kvReader
+	mqtt        *mqtt.Client
+	cfg         *config.Config
+	configPath  string
+	activeIDs   map[string]bool
+	providers   map[string]provider.NotificationProvider
+	lastFired   map[string]time.Time
+	mu          sync.Mutex
+	inflight    sync.WaitGroup
+	closing     bool
+	massURL     string
+	massToken   string
+	piperURL    string
+	cacheDir    string
 	callbackURL string
 }
 
 func NewService(n *nats.Client, m *mqtt.Client, cfg *config.Config, configPath string, googleHomes string, massURL string, massToken string, piperURL string, cacheDir string, callbackURL string) *Service {
 	s := &Service{
-		nats:       n,
-		mqtt:       m,
-		cfg:        cfg,
-		configPath: configPath,
-		activeIDs:  make(map[string]bool),
-		providers:  make(map[string]provider.NotificationProvider),
-		lastFired:  make(map[string]time.Time),
-		massURL:    massURL,
-		massToken:  massToken,
-		piperURL:   piperURL,
-		cacheDir:   cacheDir,
+		nats:        n,
+		kv:          n,
+		mqtt:        m,
+		cfg:         cfg,
+		configPath:  configPath,
+		activeIDs:   make(map[string]bool),
+		providers:   make(map[string]provider.NotificationProvider),
+		lastFired:   make(map[string]time.Time),
+		massURL:     massURL,
+		massToken:   massToken,
+		piperURL:    piperURL,
+		cacheDir:    cacheDir,
 		callbackURL: callbackURL,
 	}
 
@@ -94,7 +101,7 @@ func (s *Service) Run(ctx context.Context) error {
 
 	// Subscribe to ALL v1 events
 	subject := "iot.v1.events.>"
-	_, err := s.nats.Subscribe(subject, func(msg *natsgo.Msg) {
+	sub, err := s.nats.Subscribe(subject, func(msg *natsgo.Msg) {
 		var env envelope.EventEnvelope
 		if err := proto.Unmarshal(msg.Data, &env); err != nil {
 			return
@@ -115,17 +122,44 @@ func (s *Service) Run(ctx context.Context) error {
 		return fmt.Errorf("nats subscribe failed: %w", err)
 	}
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-
-	select {
-	case <-ctx.Done():
-		slog.Info("Context cancelled, shutting down")
-	case sig := <-stop:
-		slog.Info("Signal received, shutting down", "signal", sig)
+	<-ctx.Done()
+	slog.Info("Shutting down, waiting for in-flight notifications", "timeout", shutdownTimeout)
+	if err := sub.Unsubscribe(); err != nil {
+		slog.Warn("NATS unsubscribe failed", "error", err)
+	}
+	if !s.shutdown(shutdownTimeout) {
+		slog.Warn("In-flight notifications did not finish before shutdown timeout")
 	}
 
 	return nil
+}
+
+// shutdownTimeout covers a Music Assistant announcement (up to ~25s end to end
+// in practice, mostly already underway) while staying below the default 30s
+// terminationGracePeriodSeconds.
+const shutdownTimeout = 20 * time.Second
+
+// shutdown stops new executions from being started and waits up to timeout for
+// running ones. Setting closing under s.mu guarantees no inflight.Add races Wait.
+func (s *Service) shutdown(timeout time.Duration) bool {
+	s.mu.Lock()
+	s.closing = true
+	s.mu.Unlock()
+	return s.waitInflight(timeout)
+}
+
+func (s *Service) waitInflight(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		s.inflight.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 func (s *Service) setupMuteSwitches() {
@@ -190,7 +224,7 @@ func (s *Service) handleBinarySensorEvent(ctx context.Context, bs *binary_sensor
 		match := false
 		for _, dName := range rule.Trigger.Devices {
 			slog.Info("Checking rule trigger", "rule", rule.ID, "target_device", dName, "event_device", bs.EntityId, "event_state", stateStr, "expected_state", rule.Trigger.State)
-			if (bs.EntityId == dName || strings.HasSuffix(bs.EntityId, "."+dName)) && 
+			if (bs.EntityId == dName || strings.HasSuffix(bs.EntityId, "."+dName)) &&
 				rule.Trigger.Type == "binary_sensor" && rule.Trigger.State == stateStr {
 				match = true
 				break
@@ -213,7 +247,7 @@ func (s *Service) handleLightEvent(ctx context.Context, l *light.LightEvent) {
 	for _, rule := range s.cfg.Notifications {
 		match := false
 		for _, dName := range rule.Trigger.Devices {
-			if (l.EntityId == dName || strings.HasSuffix(l.EntityId, "."+dName)) && 
+			if (l.EntityId == dName || strings.HasSuffix(l.EntityId, "."+dName)) &&
 				rule.Trigger.Type == "light" && rule.Trigger.State == stateStr {
 				match = true
 				break
@@ -226,22 +260,43 @@ func (s *Service) handleLightEvent(ctx context.Context, l *light.LightEvent) {
 	}
 }
 
+// evaluateAndExecute runs inside the NATS subscription callback, which delivers
+// messages sequentially. The debounce is claimed synchronously here, while the
+// (potentially slow) providers run in a goroutine: otherwise events buffered behind
+// a blocked callback arrive after the window has already elapsed and fire again.
 func (s *Service) evaluateAndExecute(ctx context.Context, rule config.NotificationRule) {
-	// 0. Debounce Check
+	if !s.claimDebounce(rule) {
+		slog.Debug("Debouncing rule execution", "rule", rule.ID)
+		return
+	}
+	go func() {
+		defer s.inflight.Done()
+		// Detached from shutdown cancellation so a notification already underway
+		// can complete within the shutdown grace period.
+		s.execute(context.WithoutCancel(ctx), rule)
+	}()
+}
+
+// claimDebounce reserves an execution slot for rule; on success the caller must
+// call s.inflight.Done() once the execution has finished.
+func (s *Service) claimDebounce(rule config.NotificationRule) bool {
 	s.mu.Lock()
-	if last, ok := s.lastFired[rule.ID]; ok {
-		if time.Since(last) < 10*time.Second {
-			slog.Debug("Debouncing rule execution", "rule", rule.ID)
-			s.mu.Unlock()
-			return
-		}
+	defer s.mu.Unlock()
+	if s.closing {
+		return false
+	}
+	if last, ok := s.lastFired[rule.ID]; ok && time.Since(last) < rule.Debounce {
+		return false
 	}
 	s.lastFired[rule.ID] = time.Now()
-	s.mu.Unlock()
+	s.inflight.Add(1)
+	return true
+}
 
+func (s *Service) execute(ctx context.Context, rule config.NotificationRule) {
 	// 1. Mute/Lock Check
 	lockKey := fmt.Sprintf("lock.%s", rule.ID)
-	lockVal, _ := s.nats.GetKV(lockKey)
+	lockVal, _ := s.kv.GetKV(lockKey)
 	if lockVal == "true" {
 		return
 	}
@@ -277,7 +332,7 @@ func (s *Service) checkCondition(cond config.Condition) bool {
 		return true // Implement actual time logic if needed
 	}
 
-	valStr, err := s.nats.GetKV(cond.Device)
+	valStr, err := s.kv.GetKV(cond.Device)
 	if err != nil {
 		if cond.Default != nil {
 			valStr = fmt.Sprintf("%v", cond.Default)
@@ -299,10 +354,14 @@ func (s *Service) checkCondition(cond config.Condition) bool {
 			return false
 		}
 		switch cond.Operator {
-		case "<": return valFloat < targetFloat
-		case ">": return valFloat > targetFloat
-		case "<=": return valFloat <= targetFloat
-		case ">=": return valFloat >= targetFloat
+		case "<":
+			return valFloat < targetFloat
+		case ">":
+			return valFloat > targetFloat
+		case "<=":
+			return valFloat <= targetFloat
+		case ">=":
+			return valFloat >= targetFloat
 		}
 	}
 	return false

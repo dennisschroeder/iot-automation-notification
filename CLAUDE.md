@@ -49,9 +49,11 @@ main.go
      (`"true"` = muted).
   3. Subscribes to `iot.v1.events.>`, unmarshals the Protobuf `EventEnvelope`, and
      routes binary-sensor and light events to handlers.
-  4. `evaluateAndExecute` applies, in order: **debounce** (10s per rule id),
+  4. `evaluateAndExecute` claims the **debounce** synchronously in the NATS callback
+     (per rule id, `debounce` field, default 30s), then runs the rest in a goroutine:
      **mute/lock check** (NATS KV `lock.<id>`), **conditions**, then fans out
      `Actions` to providers concurrently (one goroutine per action, `WaitGroup`).
+     On SIGINT/SIGTERM, in-flight executions get up to 20s to finish (a second signal exits immediately).
 
 - **`internal/provider/provider.go`** — the `NotificationProvider` interface
   (`Send(ctx, action) error` + `Name() string`) and three implementations:
@@ -87,6 +89,7 @@ Rules live in a YAML file (`--config`, default `/etc/iot/config.yaml`). Example:
 ```yaml
 notifications:
   - id: "doorbell"                       # also the mute-switch id (lock.doorbell in KV)
+    debounce: 30s                        # optional, min. interval between executions; unit required ("30s", not 30); default 30s, <=0 falls back to default with a warning
     trigger:
       devices: ["binary_sensor.front_door_bell"]
       type: "binary_sensor"              # "binary_sensor" | "light"
