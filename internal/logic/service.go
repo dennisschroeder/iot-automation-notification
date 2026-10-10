@@ -134,7 +134,10 @@ func (s *Service) Run(ctx context.Context) error {
 	return nil
 }
 
-const shutdownTimeout = 5 * time.Second
+// shutdownTimeout covers a Music Assistant announcement (up to ~25s end to end
+// in practice, mostly already underway) while staying below the default 30s
+// terminationGracePeriodSeconds.
+const shutdownTimeout = 20 * time.Second
 
 // shutdown stops new executions from being started and waits up to timeout for
 // running ones. Setting closing under s.mu guarantees no inflight.Add races Wait.

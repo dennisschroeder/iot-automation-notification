@@ -53,7 +53,7 @@ main.go
      (per rule id, `debounce` field, default 30s), then runs the rest in a goroutine:
      **mute/lock check** (NATS KV `lock.<id>`), **conditions**, then fans out
      `Actions` to providers concurrently (one goroutine per action, `WaitGroup`).
-     On SIGINT/SIGTERM, in-flight executions get up to 5s to finish.
+     On SIGINT/SIGTERM, in-flight executions get up to 20s to finish (a second signal exits immediately).
 
 - **`internal/provider/provider.go`** — the `NotificationProvider` interface
   (`Send(ctx, action) error` + `Name() string`) and three implementations:

@@ -55,7 +55,12 @@ var rootCmd = &cobra.Command{
 		defer mClient.Close()
 
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-		defer stop()
+		go func() {
+			<-ctx.Done()
+			// Restore default signal handling so a second SIGINT/SIGTERM during
+			// the shutdown drain terminates immediately.
+			stop()
+		}()
 
 		svc := logic.NewService(nClient, mClient, cfg, configPath, googleHomes, massURL, massToken, piperURL, cacheDir, callbackURL)
 		if err := svc.Run(ctx); err != nil {
